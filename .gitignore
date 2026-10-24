@@ -1,0 +1,49 @@
+# 运行数据（绝不提交）
+data/
+test-data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+
+# 构建产物与压缩包
+release/
+dist/
+build/
+.build/
+.wheels/
+.gh-tools/
+out/
+*.zip
+*.exe
+*.7z
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 临时目录
+.runtime-tmp/
+.tmp/
+*.tmp
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 特意随仓库发布的演示数据与便携包
+!release/
+!release/KuaiFillVault-1.0.0-win64.zip
+!release/SHA256.txt
+!demo/
+!demo/demo-vault.db
