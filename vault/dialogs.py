@@ -300,9 +300,21 @@ class EntryDialog(BaseDialog):
 
 class SettingsDialog(BaseDialog):
     def __init__(self, app):
-        super().__init__(app, "设置", 740, 980)
+        super().__init__(app, "设置", 760, 980)
         self.db = app.db
         self.error_var = tk.StringVar()
+        settings = app.db.settings if app.db else {}
+        self._saved_skin = theme.CURRENT_SKIN or settings.get("skin") or theme.DEFAULT_SKIN
+        try:
+            self._saved_opacity = float(getattr(app, "opacity", settings.get("window_opacity") or 1.0))
+        except (TypeError, ValueError):
+            self._saved_opacity = 1.0
+        self._saved_opacity = max(0.7, min(1.0, self._saved_opacity))
+        self._preview_skin = self._saved_skin
+        self._committed = False
+        self._opacity_job = None
+        self._swatches: dict[str, tk.Frame] = {}
+        self._skin_labels: dict[str, tk.Label] = {}
         self._build()
         self._show()
 
@@ -315,11 +327,15 @@ class SettingsDialog(BaseDialog):
             head, text="设置", bg=theme.CARD, fg=theme.TEXT, font=(theme.FONT_FAMILY, 18, "bold")
         ).pack(anchor="w")
         tk.Label(
-            head, text="调整快捷键、自动锁定与填写行为", bg=theme.CARD, fg=theme.MUTED, font=(theme.FONT_FAMILY, 9)
+            head, text="调整快捷键、自动锁定、填写行为与皮肤", bg=theme.CARD, fg=theme.MUTED, font=(theme.FONT_FAMILY, 9)
         ).pack(anchor="w", pady=(4, 0))
 
-        body = tk.Frame(card, bg=theme.CARD)
-        body.pack(fill="both", expand=True, padx=28, pady=(10, 0))
+        body_wrap = tk.Frame(card, bg=theme.CARD)
+        body_wrap.pack(fill="both", expand=True, padx=(28, 18), pady=(10, 0))
+        self.body_scroll = theme.ScrollFrame(body_wrap, bg=theme.CARD)
+        self.body_scroll.pack(fill="both", expand=True)
+        body = self.body_scroll.inner
+        self.bind("<MouseWheel>", lambda e: self.body_scroll.scroll_by(e.delta))
 
         s = self.db.settings
         self.hotkey_var = tk.StringVar(value=s.get("hotkey", "Ctrl+Alt+K"))
@@ -327,6 +343,8 @@ class SettingsDialog(BaseDialog):
         self.clip_var = tk.StringVar(value=str(s.get("clipboard_clear_seconds", 25)))
         self.delay_var = tk.StringVar(value=str(s.get("autotype_delay_ms", 8)))
         self.submit_var = tk.BooleanVar(value=bool(s.get("autotype_submit", False)))
+
+        self._skin_section(body)
 
         self._row(body, "快速填充快捷键", "例如 Ctrl+Alt+K；保存后会立即重新注册", self.hotkey_var)
         self._row(body, "无操作自动锁定（分钟）", "1 - 120 分钟；离开电脑时请手动锁定", self.lock_var)
@@ -407,6 +425,114 @@ class SettingsDialog(BaseDialog):
             wrap, text=hint, bg=theme.CARD, fg=theme.FAINT, font=(theme.FONT_FAMILY, 8), anchor="w"
         ).pack(anchor="w")
 
+    # ------------------------------------------------------------------ 皮肤中心
+    def _skin_section(self, parent) -> None:
+        box = tk.Frame(parent, bg=theme.CARD)
+        box.pack(fill="x", pady=(4, 12))
+        tk.Frame(box, bg=theme.BORDER, height=1).pack(fill="x", pady=(0, 12))
+        tk.Label(
+            box, text="皮肤中心", bg=theme.CARD, fg=theme.TEXT, font=(theme.FONT_FAMILY, 10, "bold"), anchor="w"
+        ).pack(anchor="w")
+        tk.Label(
+            box,
+            text="点一下配色立即预览，保存后下次启动继续沿用。",
+            bg=theme.CARD,
+            fg=theme.FAINT,
+            font=(theme.FONT_FAMILY, 8),
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 10))
+
+        grid = tk.Frame(box, bg=theme.CARD)
+        grid.pack(fill="x")
+        for index, name in enumerate(theme.skin_names()):
+            colors = theme.skin_colors(name)
+            cell = tk.Frame(grid, bg=theme.CARD, cursor="hand2")
+            cell.grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 22), pady=(0, 12))
+            swatch = tk.Frame(
+                cell,
+                bg=colors["swatch"],
+                width=34,
+                height=34,
+                highlightthickness=2,
+                highlightbackground=theme.ACCENT if name == self._preview_skin else theme.BORDER,
+            )
+            swatch.pack(side="left")
+            swatch.pack_propagate(False)
+            text = tk.Label(
+                cell,
+                text=name,
+                bg=theme.CARD,
+                fg=theme.TEXT if name == self._preview_skin else theme.MUTED,
+                font=(theme.FONT_FAMILY, 9, "bold" if name == self._preview_skin else "normal"),
+            )
+            text.pack(side="left", padx=(8, 0))
+            for widget in (cell, swatch, text):
+                widget.bind("<Button-1>", lambda _e, n=name: self._pick_skin(n))
+            self._swatches[name] = swatch
+            self._skin_labels[name] = text
+
+        op = tk.Frame(box, bg=theme.CARD)
+        op.pack(fill="x", pady=(2, 0))
+        tk.Label(
+            op, text="窗口透明度", bg=theme.CARD, fg=theme.TEXT, font=(theme.FONT_FAMILY, 9, "bold"), anchor="w"
+        ).pack(side="left")
+        percent = int(round(self._saved_opacity * 100))
+        self.opacity_label = tk.Label(
+            op, text=f"{percent}%", bg=theme.CARD, fg=theme.MUTED, font=(theme.FONT_FAMILY, 9)
+        )
+        self.opacity_label.pack(side="right")
+        self.opacity_var = tk.DoubleVar(value=percent)
+        ttk.Scale(
+            op,
+            from_=70,
+            to=100,
+            variable=self.opacity_var,
+            command=self._on_opacity,
+            length=240,
+        ).pack(side="right", padx=(14, 10))
+        tk.Label(
+            box,
+            text="透明度只是视觉效果：调低后背后窗口的内容会透出来，请在私密环境使用。",
+            bg=theme.CARD,
+            fg=theme.FAINT,
+            font=(theme.FONT_FAMILY, 8),
+            anchor="w",
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 0))
+
+    def _pick_skin(self, name: str) -> None:
+        self._preview_skin = name
+        self.app.apply_appearance(name, self.opacity_var.get() / 100.0)
+        for key, swatch in self._swatches.items():
+            selected = key == name
+            swatch.configure(highlightbackground=theme.ACCENT if selected else theme.BORDER)
+            label = self._skin_labels.get(key)
+            if label is not None:
+                label.configure(
+                    fg=theme.TEXT if selected else theme.MUTED,
+                    font=(theme.FONT_FAMILY, 9, "bold" if selected else "normal"),
+                )
+
+    def _on_opacity(self, _value=None) -> None:
+        try:
+            percent = int(round(self.opacity_var.get()))
+        except (tk.TclError, ValueError):
+            return
+        self.opacity_label.configure(text=f"{percent}%")
+        if self._opacity_job:
+            try:
+                self.after_cancel(self._opacity_job)
+            except Exception:
+                pass
+        self._opacity_job = self.after(90, lambda: self.app.apply_opacity(percent / 100.0))
+
+    def _close(self) -> None:
+        if not self._committed:
+            # 取消/关闭时把预览中的皮肤和透明度还原
+            self.app.apply_appearance(self._saved_skin, self._saved_opacity)
+        super()._close()
+
     def _save(self) -> None:
         self.error_var.set("")
         try:
@@ -445,6 +571,8 @@ class SettingsDialog(BaseDialog):
             if not ok:
                 self.error_var.set(error)
                 return
+        skin = self._preview_skin or self._saved_skin
+        opacity = max(0.7, min(1.0, round(self.opacity_var.get()) / 100.0))
         try:
             self.db.update_settings(
                 auto_lock_minutes=minutes,
@@ -452,13 +580,19 @@ class SettingsDialog(BaseDialog):
                 autotype_delay_ms=delay,
                 autotype_submit=bool(self.submit_var.get()),
                 hotkey=new_hotkey,
+                skin=skin,
+                window_opacity=opacity,
             )
         except Exception as exc:
             self.error_var.set(f"保存失败：{exc}")
             return
         self.app.settings = self.db.settings
+        self._saved_skin = skin
+        self._saved_opacity = opacity
+        self._committed = True
         self.app._status("设置已保存")
         self._close()
+        self.app.apply_appearance(skin, opacity)
 
     def _change_password(self) -> None:
         ChangePasswordDialog(self.app, parent=self)

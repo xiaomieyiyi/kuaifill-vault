@@ -34,6 +34,107 @@ SHADOW = "#DCE3EF"
 FONT_FAMILY = "Microsoft YaHei UI"
 FONT_FALLBACK = "Segoe UI"
 
+# ---------------------------------------------------------------------------
+# 皮肤中心：每套皮肤只改主色、浅色底和侧边栏，文字/卡片保持高对比度
+# ---------------------------------------------------------------------------
+
+SKINS: dict[str, dict[str, str]] = {
+    "经典蓝": {
+        "accent": "#2F6BFF",
+        "accent_dark": "#2456D6",
+        "accent_soft": "#EAF0FF",
+        "sidebar": "#0F1B33",
+        "sidebar_card": "#172642",
+        "sidebar_hover": "#1D3052",
+        "bg": "#F3F6FB",
+        "border": "#E2E8F2",
+        "swatch": "#2F6BFF",
+    },
+    "森林绿": {
+        "accent": "#0E9F7E",
+        "accent_dark": "#0B7D63",
+        "accent_soft": "#E4F7F0",
+        "sidebar": "#0D2620",
+        "sidebar_card": "#153830",
+        "sidebar_hover": "#1C463C",
+        "bg": "#F2F8F6",
+        "border": "#E0ECE7",
+        "swatch": "#0E9F7E",
+    },
+    "葡萄紫": {
+        "accent": "#7A4DFF",
+        "accent_dark": "#6338DB",
+        "accent_soft": "#F0EBFF",
+        "sidebar": "#1A1430",
+        "sidebar_card": "#241B44",
+        "sidebar_hover": "#2E2354",
+        "bg": "#F6F3FC",
+        "border": "#E9E3F6",
+        "swatch": "#7A4DFF",
+    },
+    "珊瑚红": {
+        "accent": "#E8465B",
+        "accent_dark": "#C63348",
+        "accent_soft": "#FDEBEE",
+        "sidebar": "#2A1016",
+        "sidebar_card": "#3A1720",
+        "sidebar_hover": "#47202B",
+        "bg": "#FCF4F5",
+        "border": "#F0DFE2",
+        "swatch": "#E8465B",
+    },
+    "琥珀橙": {
+        "accent": "#E17A16",
+        "accent_dark": "#BF6510",
+        "accent_soft": "#FEF2E3",
+        "sidebar": "#2A1B0C",
+        "sidebar_card": "#3A2712",
+        "sidebar_hover": "#482F16",
+        "bg": "#FDF7EF",
+        "border": "#F1E7D9",
+        "swatch": "#E17A16",
+    },
+    "石墨灰": {
+        "accent": "#334155",
+        "accent_dark": "#1F2937",
+        "accent_soft": "#EEF1F5",
+        "sidebar": "#0B0F14",
+        "sidebar_card": "#151B23",
+        "sidebar_hover": "#1E2632",
+        "bg": "#F4F5F7",
+        "border": "#E3E6EA",
+        "swatch": "#334155",
+    },
+}
+
+DEFAULT_SKIN = "经典蓝"
+CURRENT_SKIN = DEFAULT_SKIN
+
+
+def skin_names() -> list[str]:
+    return list(SKINS)
+
+
+def skin_colors(name: str) -> dict[str, str]:
+    return dict(SKINS.get(name) or SKINS[DEFAULT_SKIN])
+
+
+def apply_skin(name: str) -> str:
+    """切换配色，返回实际使用的皮肤名。只影响之后创建的控件。"""
+    global CURRENT_SKIN, ACCENT, ACCENT_DARK, ACCENT_SOFT, SIDEBAR, SIDEBAR_CARD, SIDEBAR_HOVER, BG, BORDER
+    chosen = name if name in SKINS else DEFAULT_SKIN
+    colors = SKINS[chosen]
+    ACCENT = colors["accent"]
+    ACCENT_DARK = colors["accent_dark"]
+    ACCENT_SOFT = colors["accent_soft"]
+    SIDEBAR = colors["sidebar"]
+    SIDEBAR_CARD = colors["sidebar_card"]
+    SIDEBAR_HOVER = colors["sidebar_hover"]
+    BG = colors["bg"]
+    BORDER = colors["border"]
+    CURRENT_SKIN = chosen
+    return chosen
+
 
 def setup_style(root: tk.Misc) -> ttk.Style:
     global FONT_FAMILY

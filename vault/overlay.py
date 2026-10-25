@@ -2,31 +2,16 @@
 
 from __future__ import annotations
 
-import ctypes
 import logging
+import os
 import tkinter as tk
 from typing import Optional
 
 from . import theme
-from .autotype import root_window, user32
+from .autotype import TargetWindow, capture_target, list_windows
 from .db import Entry
 
 log = logging.getLogger(__name__)
-
-
-def window_title(hwnd: int) -> str:
-    hwnd = root_window(hwnd)
-    if not hwnd:
-        return ""
-    try:
-        length = user32.GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return ""
-        buffer = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buffer, length + 1)
-        return buffer.value.strip()
-    except Exception:
-        return ""
 
 
 def _truncate(text: str, n: int) -> str:
@@ -38,11 +23,14 @@ class QuickFillOverlay(tk.Toplevel):
     WIDTH = 660
     HEIGHT = 720
 
-    def __init__(self, app, target_hwnd: int):
+    def __init__(self, app, target):
         super().__init__(app.root)
         self.app = app
         self.db = app.db
-        self.target_hwnd = target_hwnd or 0
+        if isinstance(target, int):
+            target = capture_target(target, source="manual")
+        self.target: TargetWindow = target or TargetWindow()
+        self.target_hwnd = self.target.hwnd
         self.query_var = tk.StringVar()
         self.entries: list[Entry] = []
         self.rows: list[dict] = []
@@ -55,6 +43,10 @@ class QuickFillOverlay(tk.Toplevel):
         self.configure(bg=theme.BORDER_STRONG)
         self._build()
         self._position()
+        try:
+            self.attributes("-alpha", float(getattr(app, "opacity", 1.0)))
+        except (tk.TclError, TypeError, ValueError):
+            pass
         self.deiconify()
         self.lift()
         self.update_idletasks()
@@ -102,19 +94,28 @@ class QuickFillOverlay(tk.Toplevel):
             font=(theme.FONT_FAMILY, 12, "bold"),
             anchor="w",
         ).pack(anchor="w")
-        target_text = "未找到目标窗口 · Enter 将复制密码"
-        if self.target_hwnd:
-            name = window_title(self.target_hwnd)
-            target_text = f"目标窗口：{_truncate(name, 52)}" if name else "目标窗口已锁定（按标题确认）"
+        target_row = tk.Frame(title_box, bg=theme.SIDEBAR)
+        target_row.pack(anchor="w")
         self.target_label = tk.Label(
-            title_box,
-            text=target_text,
+            target_row,
+            text=self._target_text(),
             bg=theme.SIDEBAR,
             fg=theme.SIDEBAR_MUTED,
             font=(theme.FONT_FAMILY, 8),
             anchor="w",
         )
-        self.target_label.pack(anchor="w")
+        self.target_label.pack(side="left")
+        self.pick_label = tk.Label(
+            target_row,
+            text="换窗口",
+            bg=theme.SIDEBAR,
+            fg=theme.ACCENT,
+            font=(theme.FONT_FAMILY, 8, "underline"),
+            cursor="hand2",
+            padx=6,
+        )
+        self.pick_label.pack(side="left")
+        self.pick_label.bind("<Button-1>", lambda _e: self._pick_window())
 
         close = tk.Label(
             header,
@@ -210,6 +211,10 @@ class QuickFillOverlay(tk.Toplevel):
             footer, "复制密码", self._copy_password, kind="secondary", padx=12, pady=6, font_size=9
         )
         self.copy_btn.pack(side="right", padx=(6, 14), pady=11)
+        self.copy_account_btn = theme.make_button(
+            footer, "复制账号", self._copy_account, kind="secondary", padx=12, pady=6, font_size=9
+        )
+        self.copy_account_btn.pack(side="right", padx=(6, 0), pady=11)
         self.fill_btn = theme.make_button(
             footer, "填入", self._activate, kind="primary", padx=18, pady=6, font_size=9
         )
@@ -415,31 +420,38 @@ class QuickFillOverlay(tk.Toplevel):
         except Exception:
             pass
 
+    def _target_text(self) -> str:
+        if not self.target or not self.target.hwnd:
+            return "未找到目标窗口 · Enter 将复制密码"
+        name = self.target.title or self.target.class_name
+        if not name:
+            return "目标窗口：已锁定（请确认没有切错窗口）"
+        suffix = " · 同一程序的另一个窗口" if self.target.source == "manual" else ""
+        return f"目标窗口：{_truncate(name, 40)}{suffix}"
+
     def _update_actions(self) -> None:
         has = bool(self.rows)
         self.fill_btn.configure(state="normal" if has else "disabled")
         self.copy_btn.configure(state="normal" if has else "disabled")
+        self.copy_account_btn.configure(state="normal" if has else "disabled")
         if self.entries:
-            self.target_label.configure(
-                text=(
-                    f"目标窗口：{_truncate(window_title(self.target_hwnd), 52)}"
-                    if self.target_hwnd and window_title(self.target_hwnd)
-                    else (
-                        "目标窗口：已锁定（请确认没有切错窗口）"
-                        if self.target_hwnd
-                        else "未找到目标窗口 · Enter 将复制密码"
-                    )
-                )
-            )
+            self.target_label.configure(text=self._target_text())
 
     # ------------------------------------------------------------------ 动作
     def _activate(self) -> None:
         if not (0 <= self.index < len(self.entries)):
             return
         entry = self.entries[self.index]
-        target = self.target_hwnd
+        target = self.target
         self._close()
         self.app.fill_to_window(entry, target)
+
+    def _pick_window(self) -> None:
+        """手动选目标窗口：用于“主窗口 + 登录窗口”这类多窗口软件。"""
+        try:
+            WindowPicker(self, self.target)
+        except Exception:
+            log.exception("打开窗口选择失败")
 
     def _copy_password(self) -> None:
         if not (0 <= self.index < len(self.entries)):
@@ -447,6 +459,16 @@ class QuickFillOverlay(tk.Toplevel):
         entry = self.entries[self.index]
         self._close()
         self.app.copy_text(entry.password, f"已复制“{entry.title}”的密码")
+
+    def _copy_account(self) -> None:
+        if not (0 <= self.index < len(self.entries)):
+            return
+        entry = self.entries[self.index]
+        if not entry.account:
+            self.app._status("这条记录没有账号", "warn")
+            return
+        self._close()
+        self.app.copy_text(entry.account, f"已复制“{entry.title}”的账号")
 
     def _close(self) -> None:
         try:
@@ -462,3 +484,161 @@ class QuickFillOverlay(tk.Toplevel):
     def _on_destroy(self, event) -> None:
         if event.widget is self:
             self.app._overlay = None
+
+
+class WindowPicker(tk.Toplevel):
+    """列出所有窗口，手动指定要填写的目标（多窗口软件用）。"""
+
+    WIDTH = 560
+    HEIGHT = 480
+
+    def __init__(self, overlay: QuickFillOverlay, current: TargetWindow):
+        super().__init__(overlay)
+        self.overlay = overlay
+        self.current = current
+        self.withdraw()
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(bg=theme.BORDER_STRONG)
+        self._build()
+        self._position(overlay)
+        self.deiconify()
+        self.lift()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+        self.bind("<Escape>", lambda _e: self._close())
+
+    def _build(self) -> None:
+        shell = tk.Frame(self, bg=theme.CARD)
+        shell.pack(fill="both", expand=True, padx=1, pady=1)
+
+        header = tk.Frame(shell, bg=theme.SIDEBAR)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="选择要填入的窗口",
+            bg=theme.SIDEBAR,
+            fg=theme.WHITE,
+            font=(theme.FONT_FAMILY, 11, "bold"),
+            anchor="w",
+        ).pack(side="left", padx=16, pady=12)
+        close = tk.Label(
+            header,
+            text="×",
+            bg=theme.SIDEBAR,
+            fg=theme.SIDEBAR_MUTED,
+            font=(theme.FONT_FAMILY, 16),
+            cursor="hand2",
+            padx=12,
+        )
+        close.pack(side="right", fill="y")
+        close.bind("<Button-1>", lambda _e: self._close())
+
+        tk.Label(
+            shell,
+            text="软件有两个窗口时，选“标题栏里带账号输入框”的那个；同一程序的窗口排在最前面。",
+            bg=theme.CARD,
+            fg=theme.MUTED,
+            font=(theme.FONT_FAMILY, 8),
+            anchor="w",
+            wraplength=self.WIDTH - 40,
+            justify="left",
+        ).pack(fill="x", padx=18, pady=(12, 6))
+
+        scroll = theme.ScrollFrame(shell, bg=theme.CARD)
+        scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        rows = list_windows(exclude_pid=os.getpid(), prefer_pid=self.current.pid)
+        if not rows:
+            tk.Label(
+                scroll.inner,
+                text="没有找到可选择的窗口",
+                bg=theme.CARD,
+                fg=theme.MUTED,
+                font=(theme.FONT_FAMILY, 9),
+            ).pack(pady=30)
+        for item in rows[:60]:
+            self._build_row(scroll.inner, item)
+
+        self.bind("<MouseWheel>", lambda e: scroll.scroll_by(e.delta))
+
+    def _build_row(self, parent, item: dict) -> None:
+        same = item["pid"] == self.current.pid
+        row = tk.Frame(parent, bg=theme.CARD, cursor="hand2")
+        row.pack(fill="x", pady=1, padx=2)
+        current = item["hwnd"] == self.current.hwnd
+        body = tk.Frame(row, bg=theme.CARD)
+        body.pack(fill="x", padx=8, pady=7)
+        title = tk.Label(
+            body,
+            text=("● " if current else "") + _truncate(item["title"], 46),
+            bg=theme.CARD,
+            fg=theme.ACCENT if current else theme.TEXT,
+            font=(theme.FONT_FAMILY, 9, "bold" if same else "normal"),
+            anchor="w",
+        )
+        title.pack(anchor="w")
+        meta = tk.Label(
+            body,
+            text=f"pid {item['pid']} · {item['class_name']}" + ("（当前目标）" if current else ""),
+            bg=theme.CARD,
+            fg=theme.FAINT,
+            font=(theme.FONT_FAMILY, 7),
+            anchor="w",
+        )
+        meta.pack(anchor="w")
+        widgets = (row, body, title, meta)
+        for widget in widgets:
+            widget.bind("<Button-1>", lambda _e, h=item["hwnd"]: self._choose(h))
+            widget.bind("<Enter>", lambda _e: [w.configure(bg=theme.ACCENT_SOFT) for w in widgets])
+            widget.bind("<Leave>", lambda _e: [w.configure(bg=theme.CARD) for w in widgets])
+
+    def _position(self, overlay: QuickFillOverlay) -> None:
+        try:
+            x = overlay.winfo_rootx() + (overlay.WIDTH - self.WIDTH) // 2
+            y = overlay.winfo_rooty() + 80
+        except tk.TclError:
+            x, y = 200, 160
+        self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{max(0, x)}+{max(0, y)}")
+
+    def _choose(self, hwnd: int) -> None:
+        base = capture_target(hwnd, source="manual")
+        if base.hwnd:
+            # 保留按快捷键那一刻的光标/插入符位置，用于必要时点击输入框
+            if not base.caret and self.current.caret and _inside(base.rect, self.current.caret):
+                base.caret = self.current.caret
+            if not base.cursor and self.current.cursor and _inside(base.rect, self.current.cursor):
+                base.cursor = self.current.cursor
+            self.overlay.target = base
+            self.overlay.target_hwnd = base.hwnd
+            try:
+                self.overlay.target_label.configure(text=self.overlay._target_text())
+            except tk.TclError:
+                pass
+        self._close()
+
+    def _close(self) -> None:
+        try:
+            if self.grab_current() is self:
+                self.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            return
+        try:
+            if self.overlay.winfo_exists():
+                self.overlay.grab_set()
+                self.overlay._focus_search()
+        except tk.TclError:
+            pass
+
+
+def _inside(rect: tuple[int, int, int, int], point: Optional[tuple[int, int]]) -> bool:
+    if not point:
+        return False
+    left, top, right, bottom = rect
+    x, y = point
+    return left <= x <= right and top <= y <= bottom

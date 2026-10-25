@@ -1,4 +1,4 @@
-# 运行数据（绝不提交）
+﻿# 运行数据（绝不提交）
 data/
 test-data/
 *.db
@@ -33,6 +33,10 @@ venv/
 .runtime-tmp/
 .tmp/
 *.tmp
+.tmp_build/
+.tmp_e2e/
+.buildtools/
+.release/
 
 # 编辑器/系统
 .vscode/
@@ -43,7 +47,7 @@ desktop.ini
 
 # 特意随仓库发布的演示数据与便携包
 !release/
-!release/KuaiFillVault-1.0.0-win64.zip
+!release/KuaiFillVault-1.0.2-win64.zip
 !release/SHA256.txt
 !demo/
 !demo/demo-vault.db

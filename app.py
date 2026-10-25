@@ -1,4 +1,4 @@
-"""快填密码库启动入口。"""
+﻿"""快填密码库启动入口。"""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", help="指定 vault.db 路径（默认 data/vault.db）")
     parser.add_argument("--no-hotkey", action="store_true", help="不注册全局快捷键（调试用）")
     parser.add_argument("--verbose", action="store_true", help="输出调试日志")
-    parser.add_argument("--version", action="version", version="快填密码库 1.0.0")
+    parser.add_argument("--version", action="version", version="快填密码库 1.0.2")
     args = parser.parse_args(argv)
 
     _set_dpi_awareness()

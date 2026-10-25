@@ -39,6 +39,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "autotype_submit": False,
     "clipboard_clear_seconds": 25,
     "autotype_delay_ms": 8,
+    "skin": "经典蓝",
+    "window_opacity": 1.0,
 }
 
 

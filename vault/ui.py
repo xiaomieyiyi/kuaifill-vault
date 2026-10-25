@@ -1,4 +1,4 @@
-"""主界面：解锁、创建、列表、详情、自动锁定、快捷键调度。"""
+﻿"""主界面：解锁、创建、列表、详情、自动锁定、快捷键调度。"""
 
 from __future__ import annotations
 
@@ -47,14 +47,15 @@ class VaultApp:
         self._overlay: Optional[QuickFillOverlay] = None
         self._hotkey = None
         self._hotkey_error = ""
-        self._hotkey_queue: queue.Queue[int] = queue.Queue()
-        self._last_external_hwnd = 0
+        self._hotkey_queue: queue.Queue[autotype.TargetWindow] = queue.Queue()
+        self._last_external: autotype.TargetWindow = autotype.TargetWindow()
         self._last_activity = time.monotonic()
         self._clipboard_text: Optional[str] = None
         self._clipboard_job = None
         self._status_job = None
         self._search_job = None
         self._closing = False
+        self.opacity = 1.0
         self.status_label: Optional[tk.Label] = None
         self.hotkey_hint: Optional[tk.Label] = None
         self._default_status = "已解锁 · 数据仅保存在这台电脑"
@@ -417,6 +418,7 @@ class VaultApp:
             self.unlock_var.set("")
         except Exception:
             pass
+        self.apply_appearance(rebuild=False)
         self.show_main()
         self._status("密码库已解锁")
 
@@ -611,8 +613,52 @@ class VaultApp:
             self.confirm_var.set("")
         except Exception:
             pass
+        self.apply_appearance(rebuild=False)
         self.show_main()
         self._status("密码库已创建，按 Ctrl+N 添加第一个账号")
+
+    # ------------------------------------------------------------------ 外观
+    def apply_appearance(self, skin: Optional[str] = None, opacity: Optional[float] = None, rebuild: bool = True) -> None:
+        """切换皮肤和窗口透明度；rebuild=True 时重建当前界面。"""
+        chosen = theme.apply_skin(skin or self.settings.get("skin") or theme.DEFAULT_SKIN)
+        try:
+            value = float(opacity if opacity is not None else self.settings.get("window_opacity", 1.0))
+        except (TypeError, ValueError):
+            value = 1.0
+        self.apply_opacity(value)
+        try:
+            theme.setup_style(self.root)
+        except Exception:
+            log.exception("刷新控件样式失败")
+        if rebuild:
+            self._rebuild_view()
+        log.info("外观已更新：皮肤 %s，透明度 %.2f", chosen, self.opacity)
+
+    def apply_opacity(self, value: float) -> None:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = 1.0
+        self.opacity = max(0.7, min(1.0, value))
+        try:
+            self.root.configure(bg=theme.BG)
+            self.root.attributes("-alpha", self.opacity)
+        except tk.TclError:
+            pass
+
+    def _rebuild_view(self) -> None:
+        try:
+            if self.db:
+                selected = self._selected_id
+                self.show_main()
+                if selected:
+                    self._refresh_all(select_id=selected)
+            elif getattr(self, "unlock_entry", None) is not None and self.unlock_entry.winfo_exists():
+                self.show_lock()
+            else:
+                self.show_setup()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------ 主界面
     def show_main(self) -> None:
@@ -648,7 +694,7 @@ class VaultApp:
             names, text="快填密码库", bg=theme.SIDEBAR, fg=theme.WHITE, font=(theme.FONT_FAMILY, 11, "bold")
         ).pack(anchor="w")
         tk.Label(
-            names, text="本地加密 · v1.0", bg=theme.SIDEBAR, fg=theme.SIDEBAR_MUTED, font=(theme.FONT_FAMILY, 7)
+            names, text="本地加密 · v1.0.2", bg=theme.SIDEBAR, fg=theme.SIDEBAR_MUTED, font=(theme.FONT_FAMILY, 7)
         ).pack(anchor="w")
 
         style = ttk.Style(self.root)
@@ -1412,7 +1458,7 @@ class VaultApp:
         entry = self.db.get_entry(self._selected_id)
         if not entry:
             return
-        target = self._last_external_hwnd
+        target = self._last_external
         if not self._valid_target(target):
             messagebox.showinfo(
                 "先打开登录窗口",
@@ -1425,49 +1471,49 @@ class VaultApp:
             return
         self.fill_to_window(entry, target)
 
-    def fill_to_window(self, entry: Entry, hwnd: int) -> None:
-        target = hwnd if self._valid_target(hwnd) else self._last_external_hwnd
+    def fill_to_window(self, entry: Entry, target) -> None:
+        if isinstance(target, int):
+            target = autotype.capture_target(target, source="manual")
+        if not self._valid_target(target):
+            target = self._last_external
         if not self._valid_target(target):
             if entry.password:
                 self.copy_text(entry.password, "未找到可填写窗口，已复制密码")
             else:
                 self._status("没有可填写的内容", "warn")
             return
-        self._status(f"正在把“{entry.title}”填入当前窗口…")
+        label = target.title or target.class_name or "目标窗口"
+        self._status(f"正在把“{entry.title}”填入“{label}”…")
         self.root.after(120, lambda: self._do_fill(entry, target))
 
-    def _do_fill(self, entry: Entry, target: int) -> None:
-        if not autotype.force_foreground(target):
-            if entry.password:
-                self.copy_text(entry.password, "无法切换窗口，已复制密码")
-            else:
-                self._status("无法切换到登录窗口", "danger")
+    def _do_fill(self, entry: Entry, target: autotype.TargetWindow) -> None:
+        ok, message = autotype.fill_target(
+            target,
+            entry,
+            submit=bool(self.settings.get("autotype_submit", False)),
+            delay_ms=int(self.settings.get("autotype_delay_ms", 8)),
+        )
+        if ok:
+            suffix = "，并已按回车" if self.settings.get("autotype_submit") else ""
+            extra = f"（{message}）" if message else ""
+            self._status(f"已填入“{entry.title}”的账号和密码{suffix}{extra}", "ok")
             return
-        try:
-            autotype.fill_entry(
-                entry,
-                submit=bool(self.settings.get("autotype_submit", False)),
-                delay_ms=int(self.settings.get("autotype_delay_ms", 8)),
-            )
-        except Exception as exc:
-            log.exception("自动填写失败")
-            if entry.password:
-                self.copy_text(entry.password, f"填写失败，已复制密码")
-            self._status(f"填写失败：{exc}", "danger", timeout=6000)
-            return
-        suffix = "，并已按回车" if self.settings.get("autotype_submit") else ""
-        self._status(f"已填入“{entry.title}”的账号和密码{suffix}")
+        log.warning("填写失败：%s（目标 %s）", message, target.describe())
+        if entry.password:
+            self.copy_text(entry.password, f"{message}，已复制密码")
+        else:
+            self._status(message, "danger", timeout=8000)
 
-    def _valid_target(self, hwnd: int) -> bool:
-        if not hwnd:
+    def _valid_target(self, target) -> bool:
+        if isinstance(target, int):
+            target = autotype.TargetWindow(hwnd=target)
+        if not target or not target.hwnd:
             return False
         try:
-            hwnd = autotype.root_window(hwnd)
+            hwnd = autotype.root_window(target.hwnd)
             if not autotype.user32.IsWindow(hwnd) or not autotype.user32.IsWindowVisible(hwnd):
                 return False
-            pid = wintypes.DWORD()
-            autotype.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value == os.getpid():
+            if autotype.window_pid(hwnd) == os.getpid():
                 return False
             return True
         except Exception:
@@ -1704,18 +1750,26 @@ class VaultApp:
             return
         try:
             while True:
-                hwnd = self._hotkey_queue.get_nowait()
-                self._on_hotkey(hwnd)
+                target = self._hotkey_queue.get_nowait()
+                self._on_hotkey(target)
         except queue.Empty:
             pass
         self.root.after(100, self._poll_hotkey)
 
-    def _on_hotkey(self, hwnd: int) -> None:
+    def _on_hotkey(self, target) -> None:
         if not self.db:
             self._bring_root_front()
             return
-        target = hwnd if self._valid_target(hwnd) else self._last_external_hwnd
+        if not self._valid_target(target):
+            target = self._last_external
         if self._overlay and self._overlay.winfo_exists():
+            if self._valid_target(target):
+                self._overlay.target = target
+                self._overlay.target_hwnd = target.hwnd
+                try:
+                    self._overlay.target_label.configure(text=self._overlay._target_text())
+                except tk.TclError:
+                    pass
             self._overlay.lift()
             self._overlay._focus_search()
             return
@@ -1746,11 +1800,11 @@ class VaultApp:
             return
         try:
             hwnd = autotype.get_foreground_window()
-            if hwnd and self._valid_target(hwnd):
-                self._last_external_hwnd = hwnd
+            if hwnd and autotype.window_pid(hwnd) != os.getpid() and autotype.user32.IsWindowVisible(hwnd):
+                self._last_external = autotype.capture_target(hwnd, source="tracked")
         except Exception:
             pass
-        self.root.after(400, self._track_foreground)
+        self.root.after(500, self._track_foreground)
 
     def _touch_activity(self, _event=None) -> None:
         if self.db:
